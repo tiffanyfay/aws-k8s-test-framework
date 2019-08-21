@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,8 +20,8 @@ type EC2 interface {
 	GetSubnetsByNameOrID(ctx context.Context, nameOrIDs []string) ([]*ec2.Subnet, error)
 	DescribeSecurityGroupsAsList(ctx context.Context, input *ec2.DescribeSecurityGroupsInput) ([]*ec2.SecurityGroup, error)
 	DescribeInstancesAsList(ctx context.Context, input *ec2.DescribeInstancesInput) ([]*ec2.Instance, error)
-	WaitUntilNetworkInterfaceInUse(input *ec2.DescribeNetworkInterfacesInput) error
-	WaitUntilNetworkInterfaceInUseWithContext(ctx aws.Context, input *ec2.DescribeNetworkInterfacesInput, opts ...request.WaiterOption) error
+	WaitForDesiredNetworkInterfaceCount(input *ec2.DescribeNetworkInterfacesInput, count int) error
+	WaitForDesiredNetworkInterfaceCountWithContext(ctx aws.Context, input *ec2.DescribeNetworkInterfacesInput, count int, opts ...request.WaiterOption) error
 }
 
 func NewEC2(session *session.Session) EC2 {
@@ -100,15 +101,15 @@ func (c *defaultEC2) DescribeInstancesAsList(ctx context.Context, input *ec2.Des
 	return result, nil
 }
 
-// WaitUntilNetworkInterfaceAvailableOrInUse uses the Amazon EC2 API operation
+// WaitForDesiredNetworkInterfaceCount uses the Amazon EC2 API operation
 // DescribeNetworkInterfaces to wait for a condition to be met before returning.
 // If the condition is not met within the max attempt window, an error will
 // be returned.
-func (c *defaultEC2) WaitUntilNetworkInterfaceInUse(input *ec2.DescribeNetworkInterfacesInput) error {
-	return c.WaitUntilNetworkInterfaceInUseWithContext(aws.BackgroundContext(), input)
+func (c *defaultEC2) WaitForDesiredNetworkInterfaceCount(input *ec2.DescribeNetworkInterfacesInput, count int) error {
+	return c.WaitForDesiredNetworkInterfaceCountWithContext(aws.BackgroundContext(), input, count)
 }
 
-// WaitUntilNetworkInterfaceInUseWithContext is an extended version of WaitUntilNetworkInterfaceInUse.
+// WaitUntilNetworkInterfaceInUseWithContext is an extended version of WaitForDesiredNetworkInterfaceCount.
 // With the support for passing in a context and options to configure the
 // Waiter and the underlying request options.
 //
@@ -116,16 +117,21 @@ func (c *defaultEC2) WaitUntilNetworkInterfaceInUse(input *ec2.DescribeNetworkIn
 // the context is nil a panic will occur. In the future the SDK may create
 // sub-contexts for http.Requests. See https://golang.org/pkg/context/
 // for more information on using Contexts.
-func (c *defaultEC2) WaitUntilNetworkInterfaceInUseWithContext(ctx aws.Context, input *ec2.DescribeNetworkInterfacesInput, opts ...request.WaiterOption) error {
+func (c *defaultEC2) WaitForDesiredNetworkInterfaceCountWithContext(ctx aws.Context, input *ec2.DescribeNetworkInterfacesInput, count int, opts ...request.WaiterOption) error {
 	w := request.Waiter{
 		Name:        "WaitUntilNetworkInterfaceAvailableOrInUse",
-		MaxAttempts: 10,
-		Delay:       request.ConstantWaiterDelay(20 * time.Second),
+		MaxAttempts: 20,
+		Delay:       request.ConstantWaiterDelay(10 * time.Second),
 		Acceptors: []request.WaiterAcceptor{
 			{
 				State:   request.SuccessWaiterState,
-				Matcher: request.PathAllWaiterMatch, Argument: "NetworkInterfaces[].Status",
-				Expected: "in-use",
+				Matcher: request.PathAllWaiterMatch, Argument: fmt.Sprintf("length(NetworkInterfaces) == `%d`", count),
+				Expected: true,
+			},
+			{
+				State:   request.RetryWaiterState,
+				Matcher: request.PathWaiterMatch, Argument: fmt.Sprintf("length(NetworkInterfaces) == `%d`", count),
+				Expected: false,
 			},
 			{
 				State:    request.FailureWaiterState,
